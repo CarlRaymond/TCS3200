@@ -10,15 +10,19 @@ const int PIN_SENSOR_S3 = 3;
 volatile int rawRed = 0;
 volatile int maxRed = 0;
 volatile int filteredRed = 0;
+
 volatile int rawGreen = 0;
 volatile int maxGreen = 0;
 volatile int filteredGreen = 0;
+
 volatile int rawBlue = 0;
 volatile int maxBlue = 0;
 volatile int filteredBlue = 0;
+
 volatile int rawClear = 0;
 volatile int maxClear = 0;
-volatile int filteredClear = 0;
+volatile int filteredClearLP = 0;
+volatile int filteredClearHP = 0;
 
 // Scale factors, initialized to reasonable values
 const unsigned int SCALE = 60000;
@@ -34,10 +38,13 @@ volatile colorMode_t colorMode = RED;
 volatile int mode = 0;
 
 // Sample rate is 4ms for a full cycle of four colors, or 250 samples/sec.
-// High-pass, 10Hz
-Filter filterClear = Filter(HIGHPASS, 1.257, 0.5914);
+// High-pass, 20Hz
+Filter filterClearHP = Filter(HIGHPASS, 1.257, 0.5914);
 
-// Low-pass, 40Hz
+// Low-pass, 40Hz.
+Filter filterClearLP = Filter(LOWPASS, 2.819, 0.2905);
+
+// Low-pass, 40Hz.
 Filter filterRed = Filter(LOWPASS, 2.819, 0.2905);
 Filter filterGreen = Filter(LOWPASS, 2.819, 0.2905);
 Filter filterBlue = Filter(LOWPASS, 2.819, 0.2905);
@@ -97,8 +104,8 @@ void calibrate() {
 	maxBlue = 0;
 	sei();
 
-	// Wait 250ms
-	delay(250);
+	// Wait 500ms
+	delay(500);
 
 	cli();
 	scaleRed = 60000 / maxRed;
@@ -111,7 +118,7 @@ void calibrate() {
 void loop() {
 
 
-	if (filteredClear < -30) {
+	if (filteredClearHP < -30) {
 		ledTimer = 20;
 		PORTD |= bit(7);
 	}
@@ -180,7 +187,7 @@ void writeResult() {
 	unsigned int copyBlue = rawBlue;
 	int copyBlueFiltered = filteredBlue;
 	unsigned int copyClear = rawClear;
-	int copyClearFiltered = filteredClear;
+	int copyClearFiltered = filteredClearHP;
 
 	unsigned int scaledRed = filteredRed * scaleRed;
 	unsigned int scaledGreen = filteredGreen * scaleGreen;
@@ -189,7 +196,7 @@ void writeResult() {
 	HSV color;
 	HSV::fromScaledRGB(SCALE, scaledRed, scaledGreen, scaledBlue, color);
 
-	if (abs(copyClearFiltered) > 30) {
+	if (abs(copyClearFiltered) > 25) {
 		Serial.print("  C: ");
 		Serial.print(copyClear);
 		Serial.print("  Cf: ");
@@ -238,29 +245,34 @@ ISR(TIMER2_COMPA_vect) {
 	switch(colorMode) {
 		case RED:
 			rawRed = count;
-			if (count > maxRed) maxRed = count;
 			filteredRed = filterRed.next(count);
+			if (filteredRed > maxRed) maxRed = filteredRed;
+
 			colorMode = GREEN;
 			break;
 
 		case GREEN:
 			rawGreen = count;
-			if (count > maxGreen) maxGreen = count;
 			filteredGreen = filterGreen.next(count);
+			if (filteredGreen > maxGreen) maxGreen = filteredGreen;
+
 			colorMode = BLUE;
 			break;
 
 		case BLUE:
 			rawBlue = count;
-			if (count > maxBlue) maxBlue = count;
 			filteredBlue = filterBlue.next(count);
+			if (filteredBlue > maxBlue) maxBlue = filteredBlue;
+
 			colorMode = CLEAR;
 			break;
 
 		default:
 			rawClear = count;
-			if (count > maxClear) maxClear = count;
-			filteredClear = filterClear.next(count);
+			filteredClearLP = filterClearLP.next(count);
+			if (filteredClearLP > maxClear) maxClear = filteredClearLP;
+			filteredClearHP = filterClearHP.next(count);
+
 			colorMode = RED;
 			break;
 			}
