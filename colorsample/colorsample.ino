@@ -2,6 +2,7 @@
 
 #include "filter.h";
 #include "hsv.h";
+#include "types.h";
 
 const int PIN_LED = 13;
 const int PIN_SENSOR_S2 = 2;
@@ -30,12 +31,8 @@ unsigned int scaleRed = SCALE/200;
 unsigned int scaleGreen = SCALE/200;
 unsigned int scaleBlue = SCALE/200;
 
-enum colorMode_t { RED, BLUE, GREEN, CLEAR };
+volatile colorMode_t colorMode = CLEAR;
 
-volatile colorMode_t colorMode = RED;
-
-
-volatile int mode = 0;
 
 // Sample rate is 4ms for a full cycle of four colors, or 250 samples/sec.
 // High-pass, 20Hz
@@ -45,20 +42,155 @@ Filter filterClearHP = Filter(HIGHPASS, 1.257, 0.5914);
 Filter filterClearLP = Filter(LOWPASS, 2.819, 0.2905);
 
 // Low-pass, 40Hz.
-Filter filterRed = Filter(LOWPASS, 2.819, 0.2905);
-Filter filterGreen = Filter(LOWPASS, 2.819, 0.2905);
-Filter filterBlue = Filter(LOWPASS, 2.819, 0.2905);
+//Filter filterRed = Filter(LOWPASS, 2.819, 0.2905);
+//Filter filterGreen = Filter(LOWPASS, 2.819, 0.2905);
+//Filter filterBlue = Filter(LOWPASS, 2.819, 0.2905);
+
+// Low-pass, 20Hz.
+Filter filterRed = Filter(LOWPASS, 4.895, 0.5914);
+Filter filterGreen = Filter(LOWPASS, 4.895, 0.5914);
+Filter filterBlue = Filter(LOWPASS, 4.895, 0.5914);
+
 
 // keep-on counter for led.
 unsigned int ledTimer = 0;
 
+
+// Advance to the next color, configure sensor, and return it.
+colorMode_t advanceSensor(colorMode_t currentMode) {
+	colorMode_t newMode;
+
+	switch (currentMode) {
+		case RED: // Green
+			newMode = GREEN;
+			digitalWrite(PIN_SENSOR_S2, HIGH);
+			digitalWrite(PIN_SENSOR_S3, HIGH);
+			break;
+
+		case GREEN:
+			newMode = BLUE;
+			digitalWrite(PIN_SENSOR_S2, LOW);
+			digitalWrite(PIN_SENSOR_S3, HIGH);
+			break;
+
+		case BLUE:
+			newMode = CLEAR;
+			digitalWrite(PIN_SENSOR_S2, HIGH);
+			digitalWrite(PIN_SENSOR_S3, LOW);
+			break;
+
+		case CLEAR:
+			newMode = RED;
+			digitalWrite(PIN_SENSOR_S2, LOW);
+			digitalWrite(PIN_SENSOR_S3, LOW);
+			break;
+
+	}
+
+	return newMode;
+}
+
+// Determines scale values
+void calibrate() {
+
+	// Get maximum counts over long interval
+	cli();
+	maxRed = 0;
+	maxGreen = 0;
+	maxBlue = 0;
+	sei();
+
+	// Wait 500ms
+	delay(500);
+
+	cli();
+	scaleRed = 60000 / maxRed;
+	scaleGreen = 60000 / maxGreen;
+	scaleBlue = 60000 / maxBlue;
+	sei();
+}
+
+
+void stopTimer() {
+	// Stop timer 2
+	TCCR2A = 0;
+	TCCR2B = 0;	
+}
+
+void startTimer() {
+	// Start timer 2
+  TCCR2A = bit(WGM21); // CTC mode
+  TCCR2B = bit(CS20) | bit (CS22); // Prescaler 128	
+}
+
+void clearCounter() {
+	// Clear counter
+	TCNT1 = 0;
+}
+
+void writeResult() {
+
+	unsigned int copyRed = rawRed;
+	int copyFilteredRed = filteredRed;
+	unsigned int copyGreen = rawGreen;
+	int copyFilteredGreen = filteredGreen;
+	unsigned int copyBlue = rawBlue;
+	int copyFilteredBlue = filteredBlue;
+	unsigned int copyClear = rawClear;
+	int copyFilteredClear = filteredClearHP;
+
+	unsigned int scaledRed = copyFilteredRed * scaleRed;
+	unsigned int scaledGreen = copyFilteredGreen * scaleGreen;
+	unsigned int scaledBlue = copyFilteredBlue * scaleBlue;
+
+	HSV color;
+	HSV::fromScaledRGB(SCALE, scaledRed, scaledGreen, scaledBlue, color);
+
+	Serial.print("  C: ");
+	Serial.print(copyClear);
+	Serial.print("  Cf: ");
+	Serial.print(copyFilteredClear);
+
+	//	Serial.println();
+	Serial.print("  R: ");
+	Serial.print(copyRed);
+	Serial.print("  G: ");
+	Serial.print(copyGreen);
+	Serial.print("  B: ");
+	Serial.print(copyBlue);
+
+	Serial.print("  Rf: ");
+	Serial.print(copyFilteredRed);
+	Serial.print("  Gf: ");
+	Serial.print(copyFilteredGreen);
+	Serial.print("  Bf: ");
+	Serial.print(copyFilteredBlue);
+
+	Serial.print("  Rs: ");
+	Serial.print(scaledRed);
+	Serial.print("  Gs: ");
+	Serial.print(scaledGreen);
+	Serial.print("  Bs: ");
+	Serial.print(scaledBlue);
+
+	Serial.print("  H: ");
+	Serial.print(color.h);
+	Serial.print("  S: ");
+	Serial.print(color.s);
+	Serial.print("  V: ");
+	Serial.print(color.v);
+	Serial.println();
+}
+
+
 void setup() {
   // put your setup code here, to run once:
   pinMode(PIN_LED, OUTPUT);
+  pinMode(7, OUTPUT);
   pinMode(PIN_SENSOR_S2, OUTPUT);
   pinMode(PIN_SENSOR_S3, OUTPUT);
 
-  configureSensor();
+  colorMode = advanceSensor(colorMode);
 
   // Reset timers 1 and 2
   TCCR1A = 0;
@@ -94,177 +226,44 @@ void setup() {
 }
 
 
-// Determines scale values
-void calibrate() {
-
-	// Get maximum counts over long interval
-	cli();
-	maxRed = 0;
-	maxGreen = 0;
-	maxBlue = 0;
-	sei();
-
-	// Wait 500ms
-	delay(500);
-
-	cli();
-	scaleRed = 60000 / maxRed;
-	scaleGreen = 60000 / maxGreen;
-	scaleBlue = 60000 / maxBlue;
-	sei();
-}
-
 
 void loop() {
-
-
-	if (filteredClearHP < -30) {
-		ledTimer = 20;
-		PORTD |= bit(7);
-	}
-
-	if (ledTimer > 0) {
-		ledTimer--;
-
-		if (ledTimer == 0) {
-			PORTD &= ~bit(7);
-		}
-	}
-
-	writeResult();
-
-}
-
-void configureSensor() {
-	switch (colorMode) {
-		case RED: // Red
-			digitalWrite(PIN_SENSOR_S2, LOW);
-			digitalWrite(PIN_SENSOR_S3, LOW);
-			digitalWrite(PIN_LED, HIGH);
-			break;
-
-		case BLUE: // Blue
-			digitalWrite(PIN_SENSOR_S2, LOW);
-			digitalWrite(PIN_SENSOR_S3, HIGH);
-			break;
-
-		case CLEAR: // Clear
-			digitalWrite(PIN_SENSOR_S2, HIGH);
-			digitalWrite(PIN_SENSOR_S3, LOW);
-			digitalWrite(PIN_LED, LOW);
-			break;
-
-		case GREEN: // Green
-			digitalWrite(PIN_SENSOR_S2, HIGH);
-			digitalWrite(PIN_SENSOR_S3, HIGH);
-
-	}
-}
-
-void stopTimer() {
-	// Stop timer 2
-	TCCR2A = 0;
-	TCCR2B = 0;	
-}
-
-void startTimer() {
-	// Start timer 2
-  TCCR2A = bit(WGM21); // CTC mode
-  TCCR2B = bit(CS20) | bit (CS22); // Prescaler 128	
-}
-
-void clearCounter() {
-	// Clear counter
-	TCNT1 = 0;
-}
-
-void writeResult() {
-
-	unsigned int copyRed = rawRed;
-	int copyRedFiltered = filteredRed;
-	unsigned int copyGreen = rawGreen;
-	int copyGreenFiltered = filteredGreen;
-	unsigned int copyBlue = rawBlue;
-	int copyBlueFiltered = filteredBlue;
-	unsigned int copyClear = rawClear;
-	int copyClearFiltered = filteredClearHP;
-
-	unsigned int scaledRed = filteredRed * scaleRed;
-	unsigned int scaledGreen = filteredGreen * scaleGreen;
-	unsigned int scaledBlue = filteredBlue * scaleBlue;
-
-	HSV color;
-	HSV::fromScaledRGB(SCALE, scaledRed, scaledGreen, scaledBlue, color);
-
-	if (abs(copyClearFiltered) > 25) {
-		Serial.print("  C: ");
-		Serial.print(copyClear);
-		Serial.print("  Cf: ");
-		Serial.print(copyClearFiltered);
-
-		//	Serial.println();
-		Serial.print("  R: ");
-		Serial.print(copyRed);
-		Serial.print("  G: ");
-		Serial.print(copyGreen);
-		Serial.print("  B: ");
-		Serial.print(copyBlue);
-
-		Serial.print("  Rf: ");
-		Serial.print(copyRedFiltered);
-		Serial.print("  Gf: ");
-		Serial.print(copyGreenFiltered);
-		Serial.print("  Bf: ");
-		Serial.print(copyBlueFiltered);
-
-		Serial.print("  Rs: ");
-		Serial.print(scaledRed);
-		Serial.print("  Gs: ");
-		Serial.print(scaledGreen);
-		Serial.print("  Bs: ");
-		Serial.print(scaledBlue);
-
-		Serial.print("  H: ");
-		Serial.print(color.h);
-		Serial.print("  S: ");
-		Serial.print(color.s);
-		Serial.print("  V: ");
-		Serial.print(color.v);
-		Serial.println();
+	int v = abs(filteredClearHP);
+	if (v > 35 && v < 100) {
+		writeResult();
 	}
 }
 
 ISR(TIMER2_COMPA_vect) {
 
+	// LED on
+	PORTD |= bit(7);
+
 	// Get counter value
-	unsigned int count = TCNT1;
-
 	stopTimer();
+	colorMode_t prevMode = colorMode;
+	unsigned int count = TCNT1;
+	clearCounter();
+	colorMode = advanceSensor(colorMode);
+	startTimer();
 
-	// Copy value
-	switch(colorMode) {
+	switch(prevMode) {
 		case RED:
 			rawRed = count;
 			filteredRed = filterRed.next(count);
 			if (filteredRed > maxRed) maxRed = filteredRed;
-
-			colorMode = GREEN;
 			break;
 
 		case GREEN:
 			rawGreen = count;
 			filteredGreen = filterGreen.next(count);
 			if (filteredGreen > maxGreen) maxGreen = filteredGreen;
-
-			colorMode = BLUE;
 			break;
 
 		case BLUE:
 			rawBlue = count;
 			filteredBlue = filterBlue.next(count);
 			if (filteredBlue > maxBlue) maxBlue = filteredBlue;
-
-			colorMode = CLEAR;
 			break;
 
 		default:
@@ -272,14 +271,9 @@ ISR(TIMER2_COMPA_vect) {
 			filteredClearLP = filterClearLP.next(count);
 			if (filteredClearLP > maxClear) maxClear = filteredClearLP;
 			filteredClearHP = filterClearHP.next(count);
-
-			colorMode = RED;
 			break;
 			}
 
-	configureSensor();
-	clearCounter();
-
-	startTimer();
-
+	// LED off
+	PORTD &= ~bit(7);
 }
